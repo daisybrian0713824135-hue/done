@@ -51,6 +51,9 @@ export interface Task {
   difficulty: 'easy' | 'medium' | 'hard';
   time_estimate_minutes: number;
   instructions: string | null;
+  task_url: string | null;
+  completion_proof: string | null;
+  required_time_seconds: number;
   is_active: boolean;
   is_featured: boolean;
   daily_limit: number;
