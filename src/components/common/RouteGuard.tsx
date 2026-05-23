@@ -11,7 +11,7 @@ interface RouteGuardProps {
 const SYSTEM_PUBLIC_ROUTES = ['/login', '/403', '/404'];
 
 // Derived from routes.tsx: all routes marked with public: true
-const routePublicPaths = routes.filter(r => r.public).map(r => r.path);
+const routePublicPaths: string[] = [];
 
 const PUBLIC_ROUTES = [...SYSTEM_PUBLIC_ROUTES, ...routePublicPaths];
 
