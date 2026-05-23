@@ -42,6 +42,14 @@ export interface Package {
   created_at: string;
 }
 
+export type TaskType = 'survey' | 'video_watch' | 'whatsapp_post' | 'whatsapp_share' | 'external' | 'instant';
+
+export interface SurveyQuestion {
+  question: string;
+  options: string[];
+  correct: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -52,13 +60,25 @@ export interface Task {
   time_estimate_minutes: number;
   instructions: string | null;
   task_url: string | null;
+  task_type: TaskType;
   completion_proof: string | null;
   required_time_seconds: number;
+  survey_questions: SurveyQuestion[] | null;
+  media_url: string | null;
+  share_text: string | null;
   is_active: boolean;
   is_featured: boolean;
   daily_limit: number;
   created_at: string;
 }
+
+export const PACKAGE_DAILY_LIMITS: Record<string, number> = {
+  starter: 5,
+  bronze: 10,
+  silver: 20,
+  gold: 40,
+  vip: 999,
+};
 
 export interface TaskCompletion {
   id: string;

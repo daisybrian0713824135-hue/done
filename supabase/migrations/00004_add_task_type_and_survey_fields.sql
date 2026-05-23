@@ -1,0 +1,6 @@
+
+ALTER TABLE public.tasks
+  ADD COLUMN IF NOT EXISTS task_type TEXT NOT NULL DEFAULT 'external',
+  ADD COLUMN IF NOT EXISTS survey_questions JSONB,
+  ADD COLUMN IF NOT EXISTS media_url TEXT,
+  ADD COLUMN IF NOT EXISTS share_text TEXT;
