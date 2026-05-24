@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -6,18 +6,20 @@ import { supabase } from '@/db/supabase';
 import DashboardLayout from '@/components/layouts/DashboardLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import type { Profile, Withdrawal, Task } from '@/types/types';
 import { PACKAGE_CONFIG } from '@/types/types';
 import {
-  Users, DollarSign, ClipboardList, Wallet, Search, CheckCircle,
-  XCircle, Shield, Edit, Plus, Trash, Bell, TrendingUp, Settings, Package
+  Users, ClipboardList, Wallet, Search, CheckCircle,
+  XCircle, Shield, Trash2, Bell
 } from 'lucide-react';
+
+// Map userId -> total amount paid from activation_logs
+type AmountPaidMap = Record<string, number>;
 
 export default function AdminPage() {
   const { isAdmin, profile } = useAuth();
@@ -25,12 +27,17 @@ export default function AdminPage() {
   const [users, setUsers] = useState<Profile[]>([]);
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [amountPaidMap, setAmountPaidMap] = useState<AmountPaidMap>({});
   const [stats, setStats] = useState({ totalUsers: 0, activeUsers: 0, pendingWithdrawals: 0, totalPaid: 0 });
   const [loading, setLoading] = useState(true);
   const [userSearch, setUserSearch] = useState('');
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [annTitle, setAnnTitle] = useState('');
   const [annContent, setAnnContent] = useState('');
+  // Delete user state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<Profile | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) { navigate('/dashboard'); return; }
@@ -39,20 +46,39 @@ export default function AdminPage() {
 
   const fetchAll = async () => {
     setLoading(true);
-    const [usersRes, withdrawRes, tasksRes, statsRes] = await Promise.all([
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(50),
+    const [usersRes, withdrawRes, tasksRes, statsRes, activationRes] = await Promise.all([
+      supabase.from('profiles').select('*').order('created_at', { ascending: false }).limit(100),
       supabase.from('withdrawals').select('*, user:profiles!withdrawals_user_id_fkey(full_name,phone)').order('created_at', { ascending: false }).limit(50),
       supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(50),
       supabase.from('profiles').select('id,status'),
+      supabase.from('activation_logs').select('user_id,amount_paid'),
     ]);
 
     if (usersRes.data) setUsers(Array.isArray(usersRes.data) ? usersRes.data : []);
     if (withdrawRes.data) setWithdrawals(Array.isArray(withdrawRes.data) ? withdrawRes.data : []);
     if (tasksRes.data) setTasks(Array.isArray(tasksRes.data) ? tasksRes.data : []);
+
+    // Build amount paid map (sum per user across all activations)
+    if (activationRes.data) {
+      const map: AmountPaidMap = {};
+      for (const row of activationRes.data as { user_id: string; amount_paid: number }[]) {
+        map[row.user_id] = (map[row.user_id] || 0) + Number(row.amount_paid || 0);
+      }
+      setAmountPaidMap(map);
+    }
+
     if (statsRes.data) {
       const allUsers = Array.isArray(statsRes.data) ? statsRes.data : [];
       const activeCount = allUsers.filter((u: { status: string }) => u.status === 'active').length;
-      setStats({ totalUsers: allUsers.length, activeUsers: activeCount, pendingWithdrawals: withdrawals.filter(w => w.status === 'pending').length, totalPaid: 0 });
+      const totalPaid = activationRes.data
+        ? (activationRes.data as { amount_paid: number }[]).reduce((sum, r) => sum + Number(r.amount_paid || 0), 0)
+        : 0;
+      setStats(prev => ({
+        totalUsers: allUsers.length,
+        activeUsers: activeCount,
+        pendingWithdrawals: prev.pendingWithdrawals,
+        totalPaid,
+      }));
     }
     setLoading(false);
   };
@@ -68,6 +94,34 @@ export default function AdminPage() {
     const { error } = await supabase.from('profiles').update({ status: newStatus }).eq('id', userId);
     if (!error) { toast.success(`User ${newStatus}`); fetchAll(); }
     else toast.error('Update failed');
+  };
+
+  const handleDeleteClick = (user: Profile) => {
+    setUserToDelete(user);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!userToDelete) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.functions.invoke('admin-delete-user', {
+        body: { userId: userToDelete.id },
+      });
+      if (error) {
+        const msg = await error?.context?.text?.().catch(() => error.message);
+        toast.error('Delete failed: ' + (msg || error.message));
+      } else {
+        toast.success(`User "${userToDelete.full_name}" deleted successfully`);
+        setUsers(prev => prev.filter(u => u.id !== userToDelete.id));
+      }
+    } catch (err) {
+      toast.error('Delete failed: ' + String(err));
+    } finally {
+      setDeleting(false);
+      setDeleteDialogOpen(false);
+      setUserToDelete(null);
+    }
   };
 
   const postAnnouncement = async () => {
@@ -105,7 +159,7 @@ export default function AdminPage() {
             { label: 'Total Users', value: stats.totalUsers, icon: Users, color: 'from-purple-500 to-blue-500' },
             { label: 'Active Users', value: stats.activeUsers, icon: CheckCircle, color: 'from-green-500 to-teal-500' },
             { label: 'Pending Withdrawals', value: pendingWithdrawals.length, icon: Wallet, color: 'from-yellow-500 to-orange-500' },
-            { label: 'Total Tasks', value: tasks.length, icon: ClipboardList, color: 'from-blue-500 to-cyan-500' },
+            { label: 'Total Revenue (KES)', value: `${Number(stats.totalPaid).toLocaleString()}`, icon: ClipboardList, color: 'from-blue-500 to-cyan-500' },
           ].map((s, i) => (
             <motion.div key={i} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}>
               <div className="bg-card border border-border rounded-2xl p-4 h-full">
@@ -146,6 +200,7 @@ export default function AdminPage() {
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">User</th>
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">Phone</th>
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">Package</th>
+                        <th className="px-5 py-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">Amt Paid</th>
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">Balance</th>
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">Status</th>
                         <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground whitespace-nowrap">Actions</th>
@@ -153,10 +208,10 @@ export default function AdminPage() {
                     </thead>
                     <tbody>
                       {loading && Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}><td colSpan={6} className="px-5 py-3"><Skeleton className="h-5 w-full" /></td></tr>
+                        <tr key={i}><td colSpan={7} className="px-5 py-3"><Skeleton className="h-5 w-full" /></td></tr>
                       ))}
                       {!loading && filteredUsers.length === 0 && (
-                        <tr><td colSpan={6} className="px-5 py-8 text-center text-sm text-muted-foreground">No users found</td></tr>
+                        <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">No users found</td></tr>
                       )}
                       {!loading && filteredUsers.map(u => (
                         <tr key={u.id} className="border-b border-border last:border-0 hover:bg-muted/30">
@@ -174,6 +229,13 @@ export default function AdminPage() {
                               <span className={`text-xs font-medium ${PACKAGE_CONFIG[u.current_package]?.color}`}>{PACKAGE_CONFIG[u.current_package]?.label}</span>
                             ) : <span className="text-xs text-muted-foreground">None</span>}
                           </td>
+                          <td className="px-5 py-3 text-sm font-semibold text-right whitespace-nowrap">
+                            {amountPaidMap[u.id] ? (
+                              <span className="text-green-600 dark:text-green-400">KES {Number(amountPaidMap[u.id]).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">—</span>
+                            )}
+                          </td>
                           <td className="px-5 py-3 text-sm font-medium whitespace-nowrap">KES {Number(u.withdrawal_balance || 0).toLocaleString()}</td>
                           <td className="px-5 py-3 whitespace-nowrap">
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${u.status === 'active' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
@@ -181,14 +243,25 @@ export default function AdminPage() {
                             </span>
                           </td>
                           <td className="px-5 py-3 whitespace-nowrap">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => toggleUserStatus(u.id, u.status)}
-                              className="h-7 text-xs"
-                            >
-                              {u.status === 'active' ? 'Suspend' : 'Activate'}
-                            </Button>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => toggleUserStatus(u.id, u.status)}
+                                className="h-7 text-xs"
+                              >
+                                {u.status === 'active' ? 'Suspend' : 'Activate'}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDeleteClick(u)}
+                                className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                title="Delete user"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -320,6 +393,32 @@ export default function AdminPage() {
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Delete user confirmation */}
+        <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <AlertDialogContent className="max-w-[calc(100%-2rem)] md:max-w-md">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-balance">Delete User Account</AlertDialogTitle>
+              <AlertDialogDescription className="text-pretty">
+                Are you sure you want to permanently delete{' '}
+                <span className="font-semibold text-foreground">{userToDelete?.full_name}</span>
+                {userToDelete?.phone ? ` (${userToDelete.phone})` : ''}?
+                <br className="my-1" />
+                This will remove their account, profile, earnings, and all associated data. This action <span className="font-semibold text-destructive">cannot be undone</span>.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmDeleteUser}
+                disabled={deleting}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {deleting ? 'Deleting...' : 'Delete User'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );
